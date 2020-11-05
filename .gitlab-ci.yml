@@ -1,0 +1,50 @@
+image: docker/compose:latest
+
+services:
+  - name: docker:dind
+before_script:
+  - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN registry.gitlab.com
+
+stages:
+  - build
+  - release
+
+variables:
+  PROD_IMAGE: $REGISTRY:$CI_COMMIT_REF_NAME
+  DEV_SSH: "ssh $DEV_SERVER"
+  DOCKER_TLS_CERTDIR: ''
+
+
+build:
+  stage: build
+  script:
+    - docker build --pull --no-cache -t $PROD_IMAGE .
+    - docker push $PROD_IMAGE
+  only:
+    - master
+  tags:
+    - dev-bank
+release:
+  stage: release
+  before_script:
+    - "which ssh-agent || ( apk update && apk add openssh-client)"
+    - docker-compose -v
+    - eval $(ssh-agent -s) 
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - echo "StrictHostKeyChecking no " > ~/.ssh/config
+    - '[[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config'
+  script:
+    - $DEV_SSH "docker login -u gitlab-ci-token -p $CI_JOB_TOKEN registry.gitlab.com"
+    - docker context create remote --docker "host=ssh://$DEV_SERVER"
+    - docker context use remote
+    - $DEV_SSH "docker pull $PROD_IMAGE"
+    - docker-compose --context remote down
+    - docker-compose --context remote up -d
+    - $DEV_SSH "docker image prune -f"
+    - echo "Build successful"
+  only:
+    - master
+  tags:
+  - dev-bank
